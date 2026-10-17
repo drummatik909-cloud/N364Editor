@@ -1,0 +1,56 @@
+name: Build VST3 (Windows et macOS)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurer
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Compiler
+        run: cmake --build build --config Release
+
+      - name: Publier le plugin VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: N364-Editor-VST3-Windows
+          path: "build/N364Editor_artefacts/Release/VST3"
+
+      - name: Publier la version Standalone
+        uses: actions/upload-artifact@v4
+        with:
+          name: N364-Editor-Standalone-Windows
+          path: "build/N364Editor_artefacts/Release/Standalone/N364 Editor.exe"
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurer (Apple Silicon + Intel)
+        run: cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: Compiler
+        run: cmake --build build --config Release
+
+      - name: Archiver (conserve les permissions des bundles)
+        run: |
+          cd build/N364Editor_artefacts/Release/VST3
+          ditto -c -k --keepParent "N364 Editor.vst3" "$GITHUB_WORKSPACE/N364-Editor-VST3-macOS.zip"
+          cd ../Standalone
+          ditto -c -k --keepParent "N364 Editor.app" "$GITHUB_WORKSPACE/N364-Editor-Standalone-macOS.zip"
+
+      - name: Publier
+        uses: actions/upload-artifact@v4
+        with:
+          name: N364-Editor-macOS
+          path: |
+            N364-Editor-VST3-macOS.zip
+            N364-Editor-Standalone-macOS.zip
