@@ -36,6 +36,7 @@ struct N364Param
     int defaultValue = 0;
     int rawOffset = 0;       // valeur envoyee = valeur du parametre + rawOffset
     bool isToggle = false;
+    int nameSet = 0;         // 1 = noms de Multisounds (0..429), 2 = noms de sons de batterie (valeur 0 = OFF)
     juce::StringArray choices;
 };
 
@@ -135,16 +136,16 @@ inline const std::vector<N364Param>& getParamTable()
             knob (base + 12, g1, "Dynamic Mod Int", -15, 15, 0);
             for (int i = 0; i < 7; ++i)
                 knob (base + 13 + i, g1, "Param " + juce::String (i + 1), -200, 800, 0);
-            knob (base + 20, g1, "Balance 1", 0, 100, 100);
-            knob (base + 21, g1, "Balance 2", 0, 100, 100);
+            knob (base + 20, g1, "Balance 1 (Dry:Effect Mix)", 0, 100, 100);
+            knob (base + 21, g1, "Balance 2 (Mix 2 / R)", 0, 100, 100);
 
             choice (base + 1, g2, "Type", getEffectNames(), 0);
             choice (base + 22, g2, "Dynamic Mod Source", modSources, 0);
             knob (base + 23, g2, "Dynamic Mod Int", -15, 15, 0);
             for (int i = 0; i < 7; ++i)
                 knob (base + 24 + i, g2, "Param " + juce::String (i + 1), -200, 800, 0);
-            knob (base + 31, g2, "Balance 1", 0, 100, 100);
-            knob (base + 32, g2, "Balance 2", 0, 100, 100);
+            knob (base + 31, g2, "Balance 1 (Dry:Effect Mix)", 0, 100, 100);
+            knob (base + 32, g2, "Balance 2 (Mix 2 / R)", 0, 100, 100);
         };
 
         // ================================================== PROGRAM (TABLE 8)
@@ -186,6 +187,7 @@ inline const std::vector<N364Param>& getParamTable()
             const juce::String o = "OSC-" + juce::String (osc) + " ";
 
             knob (24 + off, o + "Oscillateur", "Multisound (0-429)", 0, 429, 0);
+            t.back().nameSet = 1;
             knob (26 + off, o + "Oscillateur", "Octave (-2=32' .. 1=4')", -2, 1, 0);
             knob (28 + off, o + "Oscillateur", "Pan A:B (15=CNT)", 0, 30, 15);
             knob (29 + off, o + "Oscillateur", "C Send Level", 0, 9, 0);
@@ -311,6 +313,7 @@ inline const std::vector<N364Param>& getParamTable()
                     p.minValue = cols[c].lo;
                     p.maxValue = cols[c].hi;
                     p.defaultValue = cols[c].def;
+                    p.nameSet = (c == 0) ? 2 : 0;
                     t.push_back (p);
                 }
             }

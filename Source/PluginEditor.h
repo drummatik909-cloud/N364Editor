@@ -29,12 +29,14 @@ private:
 
 //==============================================================================
 // Une page : grille de potards, listes, interrupteurs et enveloppes, par groupes
-class ParamPage : public juce::Component
+class ParamPage : public juce::Component,
+                  private juce::Timer
 {
 public:
     ParamPage (juce::AudioProcessorValueTreeState& state,
                const std::vector<const N364Param*>& params,
                const std::vector<N364Graph>& graphs);
+    ~ParamPage() override { stopTimer(); }
 
     int getHeightForWidth (int width) { return layoutItems (width, false); }
     void resized() override { layoutItems (getWidth(), true); }
@@ -50,8 +52,24 @@ private:
         std::unique_ptr<juce::Component> comp;
     };
 
+    // Libelles qui changent : parametres d'effet (selon le type) et noms de Multisounds
+    struct Dynamic
+    {
+        int kind = 0;                       // 0 = parametre d'effet, 1 = Multisound
+        juce::Label* label = nullptr;
+        juce::Slider* slider = nullptr;
+        std::atomic<float>* typeRaw = nullptr;
+        std::atomic<float>* valueRaw = nullptr;
+        int k = 0;
+        int lastKey = -1;
+        double lo = -200.0, hi = 800.0;
+        juce::String baseName;
+    };
+
+    void timerCallback() override;
     int layoutItems (int width, bool apply);
 
+    std::vector<Dynamic> dynamics;
     std::vector<Item> items;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>> sliderAtts;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>> comboAtts;
@@ -143,12 +161,89 @@ private:
     juce::TextButton saveButton { "Enregistrer" };
     juce::TextButton deleteButton { "Supprimer" };
     juce::TextButton folderButton { "Ouvrir le dossier" };
+    juce::TextButton renameButton { "Renommer le preset" };
+    juce::TextButton sendDumpButton { "Envoyer au N364 (dump complet)" };
+    juce::TextButton writeSlotButton { "Ecrire dans un emplacement..." };
+    juce::TextButton exportButton { "Exporter ce preset (.syx)" };
+    std::unique_ptr<juce::FileChooser> chooser;
     juce::TextButton getButton { "Lire depuis le N364" };
     juce::TextButton importButton { "Importer la banque A+B du N364" };
     juce::TextButton writeButton { "Ecrire dans la memoire du N364..." };
 
     juce::Array<juce::File> files;
     int lastVersion = -1;
+};
+
+//==============================================================================
+// Banques : Programs A B C D GM et Combinations A B C D, choix sur le N364, suivi en temps reel
+class BankPage : public juce::Component,
+                 private juce::ListBoxModel,
+                 private juce::Timer
+{
+public:
+    explicit BankPage (N364Processor& p);
+    ~BankPage() override { stopTimer(); }
+
+    void resized() override;
+
+private:
+    int getNumRows() override;
+    void paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool selected) override;
+    void listBoxItemClicked (int row, const juce::MouseEvent&) override;
+    void timerCallback() override;
+
+    bool isCombination() const;
+    int currentBank() const;
+    int numberForRow (int row) const;
+    int rowForNumber (int number) const;
+    void bankChanged();
+
+    N364Processor& processor;
+
+    juce::Label kindLabel, currentLabel, statusLabel, noteLabel;
+    juce::ComboBox kindBox;
+    std::array<juce::TextButton, 5> bankButtons;
+    juce::ListBox listBox;
+    juce::ToggleButton followToggle { "Suivre le N364 en temps reel" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> followAttachment;
+    juce::TextButton readButton { "Lire le son courant" };
+    juce::TextButton importButton { "Importer cette banque (son par son)" };
+    juce::TextButton cancelButton { "Annuler l'operation" };
+    juce::TextButton renameButton { "Renommer sur le N364..." };
+    juce::TextButton copyButton { "Copier ce son vers..." };
+    juce::TextButton swapButton { "Echanger avec..." };
+
+    int selectedBank = 0;
+    int lastSlotVersion = -1;
+    int lastPresetVersion = -1;
+};
+
+//==============================================================================
+// Echanges SysEx : sauvegardes et restaurations des banques A+B, import / export de fichiers .syx
+class ExchangePage : public juce::Component,
+                     private juce::Timer
+{
+public:
+    explicit ExchangePage (N364Processor& p);
+    ~ExchangePage() override { stopTimer(); }
+
+    void resized() override;
+
+private:
+    void timerCallback() override;
+
+    N364Processor& processor;
+
+    juce::Label titleBackup, titleFiles, statusLabel, noteLabel;
+    juce::TextButton backupProgramsButton { "Sauvegarder les Programs A+B du N364 (.syx)" };
+    juce::TextButton backupCombisButton { "Sauvegarder les Combinations A+B du N364 (.syx)" };
+    juce::TextButton restoreButton { "Restaurer des banques depuis un .syx..." };
+    juce::TextButton openBackupsButton { "Ouvrir le dossier des sauvegardes automatiques" };
+    juce::TextButton importButton { "Importer un .syx dans la bibliotheque..." };
+    juce::TextButton exportProgramsButton { "Exporter la bibliotheque Programs A+B (.syx)" };
+    juce::TextButton exportCombisButton { "Exporter la bibliotheque Combinations A+B (.syx)" };
+    juce::TextButton cancelButton { "Annuler l'operation" };
+    std::unique_ptr<juce::FileChooser> chooser;
 };
 
 //==============================================================================
@@ -182,6 +277,7 @@ private:
 
     N364LookAndFeel laf;                 // declare en premier : detruit en dernier
     N364Processor& processor;
+    juce::TooltipWindow tooltipWindow { this, 600 };
 
     juce::Label modeLabel, portLabel, inPortLabel, channelLabel, targetLabel, hintLabel, statusLabel;
     juce::ComboBox modeBox, portBox, inPortBox, targetBox;

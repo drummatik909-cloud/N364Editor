@@ -165,8 +165,45 @@ ParamPage::ParamPage (juce::AudioProcessorValueTreeState& state,
             slider->setDoubleClickReturnValue (true, p->defaultValue);
             sliderAtts.push_back (std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
                 state, p->id, *slider));
+
+            juce::Slider* sliderPtr = slider.get();
             cell.kind = Kind::knob;
             cell.comp = std::move (slider);
+
+            // Libelles dynamiques : nom du Multisound, ou parametre d'effet selon le type choisi
+            if (p->nameSet == 1)
+            {
+                Dynamic d;
+                d.kind = 1;
+                d.label = cell.label.get();
+                d.slider = sliderPtr;
+                d.valueRaw = state.getRawParameterValue (p->id);
+                d.baseName = p->name;
+                dynamics.push_back (d);
+            }
+            else if (p->name.startsWith ("Param ") && (p->group.endsWith ("Effet 1") || p->group.endsWith ("Effet 2")))
+            {
+                juce::String typeId;
+
+                for (auto* q : params)
+                    if (q->group == p->group && q->name == "Type")
+                    {
+                        typeId = q->id;
+                        break;
+                    }
+
+                if (typeId.isNotEmpty())
+                {
+                    Dynamic d;
+                    d.kind = 0;
+                    d.label = cell.label.get();
+                    d.slider = sliderPtr;
+                    d.typeRaw = state.getRawParameterValue (typeId);
+                    d.k = p->name.substring (6).getIntValue() - 1;
+                    d.baseName = p->name;
+                    dynamics.push_back (d);
+                }
+            }
         }
 
         addAndMakeVisible (*cell.comp);
@@ -175,6 +212,86 @@ ParamPage::ParamPage (juce::AudioProcessorValueTreeState& state,
 
     if (lastGroup.isNotEmpty())
         addGraphFor (lastGroup);
+
+    // Les parametres d'effet restent dans la plage du type d'effet choisi
+    for (size_t i = 0; i < dynamics.size(); ++i)
+    {
+        if (dynamics[i].kind != 0)
+            continue;
+
+        dynamics[i].slider->onValueChange = [this, i]
+        {
+            auto& d = dynamics[i];
+            const double v = d.slider->getValue();
+            const double clamped = juce::jlimit (d.lo, d.hi, v);
+
+            if (clamped != v)
+                d.slider->setValue (clamped, juce::sendNotificationSync);
+        };
+    }
+
+    if (! dynamics.empty())
+        startTimerHz (5);
+}
+
+void ParamPage::timerCallback()
+{
+    for (auto& d : dynamics)
+    {
+        if (d.kind == 1)
+        {
+            const int v = juce::jlimit (0, 429, juce::roundToInt (d.valueRaw->load()));
+
+            if (v != d.lastKey)
+            {
+                d.lastKey = v;
+                d.label->setText (juce::String (v) + " " + juce::String (n364factory::multisound[v]),
+                                  juce::dontSendNotification);
+            }
+
+            continue;
+        }
+
+        const int type = juce::roundToInt (d.typeRaw->load());
+        const int key = type * 8 + d.k;
+
+        if (key == d.lastKey)
+            continue;
+
+        d.lastKey = key;
+        const auto& info = getEffectInfo (type);
+
+        if (d.k < info.count)
+        {
+            const auto& pi = info.params[d.k];
+            d.lo = pi.lo;
+            d.hi = pi.hi;
+
+            juce::String tip = juce::String (pi.lo) + " a " + juce::String (pi.hi);
+            if (pi.note[0] != 0)
+                tip += " : " + juce::String (pi.note);
+
+            d.label->setText (pi.name, juce::dontSendNotification);
+            d.label->setTooltip (tip);
+            d.slider->setTooltip (tip);
+            d.slider->setEnabled (true);
+            d.slider->setAlpha (1.0f);
+
+            const double v = d.slider->getValue();
+            const double clamped = juce::jlimit (d.lo, d.hi, v);
+
+            if (clamped != v)
+                d.slider->setValue (clamped, juce::sendNotificationSync);
+        }
+        else
+        {
+            d.lo = d.hi = 0.0;
+            d.label->setText ("(inutilise)", juce::dontSendNotification);
+            d.label->setTooltip ("Ce parametre n'existe pas pour cet effet.");
+            d.slider->setEnabled (false);
+            d.slider->setAlpha (0.3f);
+        }
+    }
 }
 
 int ParamPage::layoutItems (int width, bool apply)
@@ -308,6 +425,22 @@ DrumPage::DrumPage (juce::AudioProcessorValueTreeState& state,
             rows.addAndMakeVisible (*slider);
             attachments.push_back (std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
                 state, params[index]->id, *slider));
+
+            if (params[index]->nameSet == 2)
+            {
+                // valeur 0 = OFF, valeur v = son de batterie n° v-1 (liste du chapitre 14)
+                slider->textFromValueFunction = [] (double v)
+                {
+                    const int i = juce::roundToInt (v);
+                    if (i <= 0)
+                        return juce::String ("OFF");
+
+                    return i <= 215 ? juce::String (n364factory::drumsound[i - 1]) : juce::String ("CARD " + juce::String (i));
+                };
+                slider->valueFromTextFunction = [] (const juce::String& t) { return (double) t.getIntValue(); };
+                slider->updateText();
+            }
+
             sliders.push_back (std::move (slider));
         }
     }
@@ -347,6 +480,579 @@ void DrumPage::resized()
                 sliders[index]->setBounds (labelW + col * cellW + 2, row * rowH + 1, cellW - 4, rowH - 2);
         }
     }
+}
+
+//==============================================================================
+// Petites fenetres de dialogue
+namespace
+{
+    void askSlot (const juce::String& title, const juce::String& message, const juce::String& okText,
+                  std::function<void (int, int)> onChosen)
+    {
+        auto* w = new juce::AlertWindow (title, message, juce::MessageBoxIconType::QuestionIcon);
+        w->addComboBox ("bank", juce::StringArray { "Banque A", "Banque B" }, "Banque");
+
+        juce::StringArray numbers;
+        for (int i = 0; i < 100; ++i)
+            numbers.add ("No " + juce::String (i).paddedLeft ('0', 2));
+
+        w->addComboBox ("number", numbers, "Numero");
+        w->addButton (okText, 1, juce::KeyPress (juce::KeyPress::returnKey));
+        w->addButton ("Annuler", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([w, onChosen] (int result)
+        {
+            if (result == 1)
+                onChosen (w->getComboBoxComponent ("bank")->getSelectedItemIndex(),
+                          w->getComboBoxComponent ("number")->getSelectedItemIndex());
+        }), true);
+    }
+
+    void askText (const juce::String& title, const juce::String& message, const juce::String& initial,
+                  const juce::String& okText, std::function<void (juce::String)> onChosen)
+    {
+        auto* w = new juce::AlertWindow (title, message, juce::MessageBoxIconType::QuestionIcon);
+        w->addTextEditor ("text", initial, "Nom");
+        w->addButton (okText, 1, juce::KeyPress (juce::KeyPress::returnKey));
+        w->addButton ("Annuler", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([w, onChosen] (int result)
+        {
+            if (result == 1)
+                onChosen (w->getTextEditorContents ("text"));
+        }), true);
+    }
+
+    void saveSyxDialog (std::unique_ptr<juce::FileChooser>& holder, const juce::String& title,
+                        const juce::String& defaultName, std::function<void (juce::File)> onChosen)
+    {
+        holder = std::make_unique<juce::FileChooser> (
+            title, juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile (defaultName), "*.syx");
+
+        holder->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                 | juce::FileBrowserComponent::warnAboutOverwriting,
+                             [onChosen] (const juce::FileChooser& fc)
+                             {
+                                 const auto f = fc.getResult();
+
+                                 if (f != juce::File())
+                                     onChosen (f);
+                             });
+    }
+
+    void openSyxDialog (std::unique_ptr<juce::FileChooser>& holder, const juce::String& title,
+                        std::function<void (juce::File)> onChosen)
+    {
+        holder = std::make_unique<juce::FileChooser> (
+            title, juce::File::getSpecialLocation (juce::File::userDocumentsDirectory), "*.syx");
+
+        holder->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                             [onChosen] (const juce::FileChooser& fc)
+                             {
+                                 const auto f = fc.getResult();
+
+                                 if (f != juce::File())
+                                     onChosen (f);
+                             });
+    }
+
+    void confirmDialog (const juce::String& title, const juce::String& message, const juce::String& okText,
+                        std::function<void()> onOk)
+    {
+        juce::AlertWindow::showAsync (juce::MessageBoxOptions()
+                                          .withIconType (juce::MessageBoxIconType::WarningIcon)
+                                          .withTitle (title)
+                                          .withMessage (message)
+                                          .withButton (okText)
+                                          .withButton ("Annuler"),
+                                      [onOk] (int result)
+                                      {
+                                          if (result == 1)
+                                              onOk();
+                                      });
+    }
+}
+
+//==============================================================================
+namespace
+{
+    juce::String bankSlotLabel (int bank, int number)
+    {
+        if (bank <= 3)
+            return juce::String::charToString ((juce::juce_wchar) ('A' + bank)) + juce::String (number).paddedLeft ('0', 2);
+
+        return "G" + juce::String (number).paddedLeft ('0', 3);
+    }
+}
+
+BankPage::BankPage (N364Processor& p)
+    : processor (p), listBox ("slots", this)
+{
+    kindLabel.setText ("Type", juce::dontSendNotification);
+    addAndMakeVisible (kindLabel);
+
+    kindBox.addItem ("Programmes", 1);
+    kindBox.addItem ("Combinations", 2);
+    kindBox.setSelectedId (1, juce::dontSendNotification);
+    kindBox.onChange = [this] { bankChanged(); };
+    addAndMakeVisible (kindBox);
+
+    const char* names[5] = { "A", "B", "C", "D", "GM" };
+
+    for (int i = 0; i < 5; ++i)
+    {
+        auto& b = bankButtons[(size_t) i];
+        b.setButtonText (names[i]);
+        b.setClickingTogglesState (true);
+        b.setRadioGroupId (4242);
+        b.onClick = [this, i] { selectedBank = i; bankChanged(); };
+        addAndMakeVisible (b);
+    }
+
+    bankButtons[0].setToggleState (true, juce::dontSendNotification);
+
+    followAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        processor.apvts, "follow", followToggle);
+    addAndMakeVisible (followToggle);
+
+    currentLabel.setFont (currentLabel.getFont().boldened());
+    addAndMakeVisible (currentLabel);
+
+    listBox.setRowHeight (22);
+    addAndMakeVisible (listBox);
+
+    readButton.onClick = [this]
+    {
+        processor.requestFromSynth (isCombination() ? N364Processor::Request::combination
+                                                    : N364Processor::Request::program);
+    };
+
+    importButton.onClick = [this] { processor.startCrawl (isCombination(), selectedBank); };
+    cancelButton.onClick = [this] { processor.cancelCrawl(); processor.cancelTask(); };
+
+    renameButton.onClick = [this]
+    {
+        const int row = listBox.getSelectedRow();
+
+        if (row < 0)
+        {
+            statusLabel.setText ("Selectionne d'abord un son dans la liste.", juce::dontSendNotification);
+            return;
+        }
+
+        const bool combination = isCombination();
+        const int bank = selectedBank;
+        const int number = numberForRow (row);
+        const auto current = processor.getSlotName (combination, bank, number);
+        juce::Component::SafePointer<BankPage> safe (this);
+
+        askText ("Renommer le son sur le N364",
+                 "Nouveau nom (10 caracteres maximum). Le son sera reecrit dans la memoire du N364 (" + bankSlotLabel (bank, number)
+                     + "). Seules les banques A et B sont modifiables.",
+                 current, "Renommer",
+                 [safe, combination, bank, number] (juce::String name)
+                 {
+                     if (safe != nullptr)
+                         safe->processor.renameOnSynth (combination, bank, number, name);
+                 });
+    };
+
+    copyButton.onClick = [this]
+    {
+        const int row = listBox.getSelectedRow();
+
+        if (row < 0)
+        {
+            statusLabel.setText ("Selectionne d'abord un son dans la liste.", juce::dontSendNotification);
+            return;
+        }
+
+        const bool combination = isCombination();
+        const int bank = selectedBank;
+        const int number = numberForRow (row);
+        juce::Component::SafePointer<BankPage> safe (this);
+
+        askSlot ("Copier le son " + bankSlotLabel (bank, number),
+                 "Destination : un emplacement des banques A ou B. Son contenu actuel sera ECRASE.", "Copier",
+                 [safe, combination, bank, number] (int dstBank, int dstNumber)
+                 {
+                     if (safe != nullptr)
+                         safe->processor.copySlot (combination, bank, number, dstBank, dstNumber);
+                 });
+    };
+
+    swapButton.onClick = [this]
+    {
+        const int row = listBox.getSelectedRow();
+
+        if (row < 0)
+        {
+            statusLabel.setText ("Selectionne d'abord un son dans la liste.", juce::dontSendNotification);
+            return;
+        }
+
+        const bool combination = isCombination();
+        const int bank = selectedBank;
+        const int number = numberForRow (row);
+        juce::Component::SafePointer<BankPage> safe (this);
+
+        askSlot ("Echanger le son " + bankSlotLabel (bank, number),
+                 "Choisis l'autre emplacement (banques A ou B). Les deux sons seront echanges dans la memoire du N364.", "Echanger",
+                 [safe, combination, bank, number] (int otherBank, int otherNumber)
+                 {
+                     if (safe != nullptr)
+                         safe->processor.swapSlots (combination, bank, number, otherBank, otherNumber);
+                 });
+    };
+
+    addAndMakeVisible (readButton);
+    addAndMakeVisible (importButton);
+    addAndMakeVisible (cancelButton);
+    addAndMakeVisible (renameButton);
+    addAndMakeVisible (copyButton);
+    addAndMakeVisible (swapButton);
+
+    statusLabel.setFont (statusLabel.getFont().withHeight (13.0f));
+    addAndMakeVisible (statusLabel);
+
+    noteLabel.setText ("Clique sur un son : le N364 le selectionne, puis le plugin le lit et met ses potards a jour. Quand tu changes de son sur le N364, "
+                       "le plugin suit. Noms en bleu clair = lus sur le N364 ; les autres viennent du manuel. Renommer, copier et echanger "
+                       "modifient la memoire du N364 (banques A et B seulement). Les banques C, D et GM sont des sons d'usine : on peut les "
+                       "lire et les copier vers A ou B.",
+                       juce::dontSendNotification);
+    noteLabel.setFont (noteLabel.getFont().withHeight (12.0f));
+    addAndMakeVisible (noteLabel);
+
+    bankChanged();
+    startTimer (200);
+}
+
+bool BankPage::isCombination() const
+{
+    return kindBox.getSelectedId() == 2;
+}
+
+int BankPage::currentBank() const
+{
+    return selectedBank;
+}
+
+int BankPage::numberForRow (int row) const
+{
+    return (! isCombination() && selectedBank == 4) ? row + 1 : row;
+}
+
+int BankPage::rowForNumber (int number) const
+{
+    return (! isCombination() && selectedBank == 4) ? number - 1 : number;
+}
+
+int BankPage::getNumRows()
+{
+    return (! isCombination() && selectedBank == 4) ? 136 : 100;
+}
+
+void BankPage::bankChanged()
+{
+    if (isCombination() && selectedBank == 4)
+    {
+        selectedBank = 0;
+        bankButtons[0].setToggleState (true, juce::dontSendNotification);
+    }
+
+    bankButtons[4].setEnabled (! isCombination());
+    listBox.updateContent();
+    listBox.repaint();
+
+    const auto cur = processor.getCurrentSlot();
+
+    if (cur.bank == selectedBank && cur.combination == isCombination() && cur.number >= 0)
+        listBox.scrollToEnsureRowIsOnscreen (rowForNumber (cur.number));
+}
+
+void BankPage::paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool selected)
+{
+    const bool combination = isCombination();
+    const int number = numberForRow (row);
+    const auto cur = processor.getCurrentSlot();
+    const bool isCurrent = cur.bank == selectedBank && cur.combination == combination && cur.number == number;
+
+    if (isCurrent)
+        g.fillAll (juce::Colour (0xff42a2c8).withAlpha (0.45f));
+    else if (selected)
+        g.fillAll (juce::Colour (0xff42a2c8).withAlpha (0.2f));
+
+    bool live = false;
+    const auto name = processor.getSlotName (combination, selectedBank, number, &live);
+
+    g.setColour (juce::Colour (0xffaab6bb));
+    g.drawText (bankSlotLabel (selectedBank, number), 8, 0, 64, height, juce::Justification::centredLeft);
+
+    g.setColour (live ? juce::Colour (0xff9fe3ff) : juce::Colour (0xffe6eef2));
+    g.drawText (name, 76, 0, width - 190, height, juce::Justification::centredLeft, true);
+
+    juce::String tag;
+
+    if (! combination)
+    {
+        const char kind = selectedBank <= 3 ? n364factory::programs[selectedBank][number].kind
+                                            : n364factory::gm[number - 1].kind;
+        tag = kind == 'D' ? "Double" : kind == 'R' ? "Drums" : "";
+    }
+    else if (selectedBank <= 3 && number < 100)
+    {
+        tag = n364factory::combinations[selectedBank][number].type;
+    }
+
+    g.setColour (juce::Colour (0xff8a979d));
+    g.drawText (tag, width - 110, 0, 100, height, juce::Justification::centredRight);
+}
+
+void BankPage::listBoxItemClicked (int row, const juce::MouseEvent&)
+{
+    if (row >= 0 && row < getNumRows())
+        processor.selectSlot (isCombination(), selectedBank, numberForRow (row));
+}
+
+void BankPage::timerCallback()
+{
+    statusLabel.setText (processor.getStatus(), juce::dontSendNotification);
+
+    const int v = processor.getSlotVersion();
+    const int pv = processor.getPresetVersion();
+
+    if (v == lastSlotVersion && pv == lastPresetVersion)
+        return;
+
+    lastSlotVersion = v;
+    lastPresetVersion = pv;
+
+    const auto cur = processor.getCurrentSlot();
+
+    if (cur.bank >= 0)
+    {
+        currentLabel.setText ("N364 : " + juce::String (cur.combination ? "Combination " : "Programme ")
+                              + bankSlotLabel (cur.bank, cur.number) + "  " + processor.getSlotName (cur.combination, cur.bank, cur.number),
+                              juce::dontSendNotification);
+
+        // suivi : la liste se place sur le son courant du N364
+        if (followToggle.getToggleState() && (cur.combination != isCombination() || cur.bank != selectedBank))
+        {
+            kindBox.setSelectedId (cur.combination ? 2 : 1, juce::dontSendNotification);
+            selectedBank = cur.bank;
+            bankButtons[(size_t) cur.bank].setToggleState (true, juce::dontSendNotification);
+            bankChanged();
+        }
+        else if (followToggle.getToggleState())
+        {
+            listBox.scrollToEnsureRowIsOnscreen (rowForNumber (cur.number));
+        }
+    }
+
+    listBox.repaint();
+}
+
+void BankPage::resized()
+{
+    auto area = getLocalBounds().reduced (10);
+
+    auto row1 = area.removeFromTop (28);
+    kindLabel.setBounds (row1.removeFromLeft (40));
+    kindBox.setBounds (row1.removeFromLeft (150));
+    row1.removeFromLeft (16);
+
+    for (auto& b : bankButtons)
+    {
+        b.setBounds (row1.removeFromLeft (56));
+        row1.removeFromLeft (4);
+    }
+
+    row1.removeFromLeft (16);
+    followToggle.setBounds (row1.removeFromLeft (240));
+
+    area.removeFromTop (6);
+    currentLabel.setBounds (area.removeFromTop (24));
+
+    auto bottom = area.removeFromBottom (150);
+    area.removeFromBottom (6);
+    listBox.setBounds (area);
+
+    auto buttons = bottom.removeFromTop (28);
+    readButton.setBounds (buttons.removeFromLeft (170));
+    buttons.removeFromLeft (10);
+    importButton.setBounds (buttons.removeFromLeft (260));
+    buttons.removeFromLeft (10);
+    cancelButton.setBounds (buttons.removeFromLeft (150));
+
+    bottom.removeFromTop (6);
+    auto buttons2 = bottom.removeFromTop (28);
+    renameButton.setBounds (buttons2.removeFromLeft (200));
+    buttons2.removeFromLeft (10);
+    copyButton.setBounds (buttons2.removeFromLeft (180));
+    buttons2.removeFromLeft (10);
+    swapButton.setBounds (buttons2.removeFromLeft (150));
+
+    bottom.removeFromTop (6);
+    statusLabel.setBounds (bottom.removeFromTop (22));
+    noteLabel.setBounds (bottom);
+}
+
+//==============================================================================
+ExchangePage::ExchangePage (N364Processor& p)
+    : processor (p)
+{
+    titleBackup.setText ("Banques A+B du N364", juce::dontSendNotification);
+    titleBackup.setFont (titleBackup.getFont().boldened());
+    addAndMakeVisible (titleBackup);
+
+    titleFiles.setText ("Bibliotheque et fichiers .syx", juce::dontSendNotification);
+    titleFiles.setFont (titleFiles.getFont().boldened());
+    addAndMakeVisible (titleFiles);
+
+    juce::Component::SafePointer<ExchangePage> safe (this);
+
+    backupProgramsButton.onClick = [this, safe]
+    {
+        saveSyxDialog (chooser, "Sauvegarder les Programs A+B", "N364_Programs_AB.syx",
+                       [safe] (juce::File f)
+                       {
+                           if (safe != nullptr)
+                               safe->processor.backupBanksToFile (false, f);
+                       });
+    };
+
+    backupCombisButton.onClick = [this, safe]
+    {
+        saveSyxDialog (chooser, "Sauvegarder les Combinations A+B", "N364_Combinations_AB.syx",
+                       [safe] (juce::File f)
+                       {
+                           if (safe != nullptr)
+                               safe->processor.backupBanksToFile (true, f);
+                       });
+    };
+
+    restoreButton.onClick = [this, safe]
+    {
+        openSyxDialog (chooser, "Choisis le fichier .syx a restaurer",
+                       [safe] (juce::File f)
+                       {
+                           if (safe == nullptr)
+                               return;
+
+                           confirmDialog ("Restaurer des banques",
+                                          "Les banques A et B du N364 (Programs ou Combinations selon le fichier) vont etre REMPLACEES par le contenu de "
+                                          + f.getFileName() + ". Le plugin sauvegarde d'abord l'etat actuel du N364 dans son dossier de sauvegardes. "
+                                          "Continuer ?",
+                                          "Restaurer",
+                                          [safe, f]
+                                          {
+                                              if (safe != nullptr)
+                                                  safe->processor.restoreBanksFromFile (f);
+                                          });
+                       });
+    };
+
+    openBackupsButton.onClick = [this]
+    {
+        const auto folder = processor.getBackupFolder();
+        folder.createDirectory();
+        folder.revealToUser();
+    };
+
+    importButton.onClick = [this, safe]
+    {
+        openSyxDialog (chooser, "Choisis un fichier .syx a importer",
+                       [safe] (juce::File f)
+                       {
+                           if (safe != nullptr)
+                               safe->processor.importSyxFile (f);
+                       });
+    };
+
+    exportProgramsButton.onClick = [this, safe]
+    {
+        saveSyxDialog (chooser, "Exporter la bibliotheque Programs A+B", "Bibliotheque_Programs_AB.syx",
+                       [safe] (juce::File f)
+                       {
+                           if (safe != nullptr)
+                               safe->processor.exportLibraryBanksSyx (false, f);
+                       });
+    };
+
+    exportCombisButton.onClick = [this, safe]
+    {
+        saveSyxDialog (chooser, "Exporter la bibliotheque Combinations A+B", "Bibliotheque_Combinations_AB.syx",
+                       [safe] (juce::File f)
+                       {
+                           if (safe != nullptr)
+                               safe->processor.exportLibraryBanksSyx (true, f);
+                       });
+    };
+
+    cancelButton.onClick = [this] { processor.cancelCrawl(); processor.cancelTask(); };
+
+    for (auto* b : { &backupProgramsButton, &backupCombisButton, &restoreButton, &openBackupsButton, &importButton,
+                     &exportProgramsButton, &exportCombisButton, &cancelButton })
+        addAndMakeVisible (*b);
+
+    statusLabel.setFont (statusLabel.getFont().withHeight (13.0f));
+    addAndMakeVisible (statusLabel);
+
+    noteLabel.setText ("Sauvegarder : le plugin demande au N364 ses 200 Programs (ou Combinations) A+B et les enregistre tels quels dans un fichier .syx "
+                       "(a conserver precieusement). Restaurer : le fichier est renvoye au N364 apres une sauvegarde automatique de l'etat actuel ; "
+                       "il faut le mode \"Port MIDI direct\". Importer : les sons d'un .syx (un son ou une banque) deviennent des presets de la bibliotheque. "
+                       "Exporter la bibliotheque : les presets A00 a B99 (avec donnees completes) sont regroupes en une banque .syx.",
+                       juce::dontSendNotification);
+    noteLabel.setFont (noteLabel.getFont().withHeight (12.0f));
+    addAndMakeVisible (noteLabel);
+
+    startTimer (250);
+}
+
+void ExchangePage::timerCallback()
+{
+    statusLabel.setText (processor.getStatus(), juce::dontSendNotification);
+}
+
+void ExchangePage::resized()
+{
+    auto area = getLocalBounds().reduced (14);
+
+    titleBackup.setBounds (area.removeFromTop (24));
+    area.removeFromTop (4);
+
+    auto row = area.removeFromTop (30);
+    backupProgramsButton.setBounds (row.removeFromLeft (330));
+    row.removeFromLeft (10);
+    backupCombisButton.setBounds (row.removeFromLeft (350));
+
+    area.removeFromTop (8);
+    row = area.removeFromTop (30);
+    restoreButton.setBounds (row.removeFromLeft (330));
+    row.removeFromLeft (10);
+    openBackupsButton.setBounds (row.removeFromLeft (350));
+
+    area.removeFromTop (22);
+    titleFiles.setBounds (area.removeFromTop (24));
+    area.removeFromTop (4);
+
+    row = area.removeFromTop (30);
+    importButton.setBounds (row.removeFromLeft (330));
+
+    area.removeFromTop (8);
+    row = area.removeFromTop (30);
+    exportProgramsButton.setBounds (row.removeFromLeft (330));
+    row.removeFromLeft (10);
+    exportCombisButton.setBounds (row.removeFromLeft (350));
+
+    area.removeFromTop (22);
+    row = area.removeFromTop (30);
+    cancelButton.setBounds (row.removeFromLeft (200));
+
+    area.removeFromTop (10);
+    statusLabel.setBounds (area.removeFromTop (24));
+    area.removeFromTop (6);
+    noteLabel.setBounds (area.removeFromTop (90));
 }
 
 //==============================================================================
@@ -456,8 +1162,64 @@ LibraryPage::LibraryPage (N364Processor& p)
 
     writeButton.onClick = [this] { confirmWrite(); };
 
+    renameButton.onClick = [this]
+    {
+        const auto f = selectedFile();
+        const auto name = nameEditor.getText().trim();
+
+        if (! f.existsAsFile() || name.isEmpty())
+            return;
+
+        if (processor.renamePreset (f, name))
+            refresh();
+    };
+
+    sendDumpButton.onClick = [this]
+    {
+        const auto f = selectedFile();
+
+        if (f.existsAsFile())
+            processor.sendPresetToSynth (f, -1, 0);
+    };
+
+    writeSlotButton.onClick = [this]
+    {
+        const auto f = selectedFile();
+
+        if (! f.existsAsFile())
+            return;
+
+        juce::Component::SafePointer<LibraryPage> safe (this);
+
+        askSlot ("Ecrire ce preset dans le N364",
+                 "Emplacement des banques A ou B. Son contenu actuel sera ECRASE.", "Ecrire",
+                 [safe, f] (int bank, int number)
+                 {
+                     if (safe != nullptr)
+                         safe->processor.sendPresetToSynth (f, bank, number);
+                 });
+    };
+
+    exportButton.onClick = [this]
+    {
+        const auto f = selectedFile();
+
+        if (! f.existsAsFile())
+            return;
+
+        juce::Component::SafePointer<LibraryPage> safe (this);
+
+        saveSyxDialog (chooser, "Exporter le preset en .syx", f.getFileNameWithoutExtension() + ".syx",
+                       [safe, f] (juce::File dest)
+                       {
+                           if (safe != nullptr)
+                               safe->processor.exportPresetSyx (f, dest);
+                       });
+    };
+
     for (auto* b : { &loadButton, &loadSendButton, &saveButton, &deleteButton, &folderButton,
-                     &getButton, &importButton, &writeButton })
+                     &getButton, &importButton, &writeButton, &renameButton, &sendDumpButton,
+                     &writeSlotButton, &exportButton })
         addAndMakeVisible (*b);
 
     synthLabel.setText ("Synthe N364 (MIDI IN et OUT a configurer en haut de la fenetre)", juce::dontSendNotification);
@@ -605,14 +1367,22 @@ void LibraryPage::resized()
     right.removeFromTop (6);
     loadSendButton.setBounds (right.removeFromTop (28));
     right.removeFromTop (6);
-    deleteButton.setBounds (right.removeFromTop (28));
+    sendDumpButton.setBounds (right.removeFromTop (28));
     right.removeFromTop (6);
-    folderButton.setBounds (right.removeFromTop (28));
+    writeSlotButton.setBounds (right.removeFromTop (28));
+    right.removeFromTop (6);
+    exportButton.setBounds (right.removeFromTop (28));
     right.removeFromTop (14);
     nameLabel.setBounds (right.removeFromTop (20));
     nameEditor.setBounds (right.removeFromTop (26));
     right.removeFromTop (6);
     saveButton.setBounds (right.removeFromTop (28));
+    right.removeFromTop (6);
+    renameButton.setBounds (right.removeFromTop (28));
+    right.removeFromTop (14);
+    deleteButton.setBounds (right.removeFromTop (28));
+    right.removeFromTop (6);
+    folderButton.setBounds (right.removeFromTop (28));
 
     bottom.removeFromTop (8);
     synthLabel.setBounds (bottom.removeFromTop (22));
@@ -761,12 +1531,14 @@ N364Editor::N364Editor (N364Processor& p)
     tabs.addTab ("Combination", tabColour, new PageView (processor.apvts, combinationPage, graphs), true);
     tabs.addTab ("Drums", tabColour, new DrumPage (processor.apvts, drumsPage), true);
     tabs.addTab ("Global", tabColour, new PageView (processor.apvts, globalPage, graphs), true);
+    tabs.addTab ("Banques", tabColour, new BankPage (processor), true);
     tabs.addTab ("Bibliotheque", tabColour, new LibraryPage (processor), true);
+    tabs.addTab ("SysEx", tabColour, new ExchangePage (processor), true);
 
     tabs.onTabChanged = [this] (const juce::String& name)
     {
-        if (name == "Bibliotheque")
-            return;   // la bibliotheque ne change pas la cible
+        if (name == "Bibliotheque" || name == "Banques" || name == "SysEx")
+            return;   // ces onglets ne changent pas la cible
 
         const int index = name == "Combination" ? 1 : name == "Drums" ? 2 : name == "Global" ? 3 : 0;
         processor.setTarget ((N364Target) index);
