@@ -1,4 +1,4 @@
-# N364 Editor (v4) : plugin VST3 d'édition et de bibliothèque pour Korg N264/N364
+# N364 Editor (v6) : plugin VST3 d'édition, de banques et de bibliothèque pour Korg N264/N364
 
 Le plugin ne produit aucun son. Il pilote le N364 par SysEx (manuel, « Format de données MIDI »,
 p. 219-229), lit ses sons, et range tes sons dans une bibliothèque. Environ 900 paramètres,
@@ -7,6 +7,52 @@ tous automatisables dans Bitwig.
 > Ce code n'a pas pu être compilé ni testé sur un vrai N364 au moment de sa rédaction.
 > Seules la table des paramètres et le décodage des dumps ont été vérifiés par des tests automatiques.
 > Voir « Points à vérifier » plus bas.
+
+## Nouveautés de la v6 : gestion complète des banques et de la bibliothèque
+
+- **Données complètes des sons** : chaque son lu sur le N364 (lecture, import de banque, import .syx) est conservé avec ses
+  données brutes (164 octets par Program, 136 par Combination), y compris les paramètres d'effets. Les exports et
+  restaurations sont donc fidèles à l'original. Quand tu enregistres un preset après avoir modifié des potards, ils sont recopiés
+  dans ces données brutes.
+- **Export et import SysEx (.syx)** (onglet **SysEx**) :
+  - sauvegarder les 200 Programs A+B ou les 200 Combinations A+B du N364 dans un fichier .syx (copie exacte du dump) ;
+  - restaurer un tel fichier dans le N364, **après une sauvegarde automatique** de l'état actuel (dossier de sauvegardes,
+    bouton « Ouvrir le dossier des sauvegardes automatiques ») ;
+  - importer un .syx (un son ou une banque) dans la bibliothèque ;
+  - exporter la bibliothèque (presets A00 à B99) en banque .syx ; exporter un preset seul en .syx (onglet Bibliothèque).
+- **Renommer** : un preset de la bibliothèque (le nom des 10 premiers caractères est aussi mis à jour dans ses données),
+  et un son du N364 (onglet Banques, « Renommer sur le N364 »).
+- **Déplacer, copier, échanger** (onglet Banques) : copier un son d'une banque quelconque (A, B, C, D, GM) vers un emplacement
+  A ou B ; échanger deux sons des banques A et B. Les écritures passent par le dump complet puis la demande d'écriture du N364.
+- **Envoyer un son entier au N364** (onglet Bibliothèque) : « Envoyer au N364 (dump complet) » charge le son dans le tampon
+  d'édition ; « Écrire dans un emplacement... » l'écrit en plus dans la banque A ou B.
+- **Sécurités** : seules les banques A et B sont écrivables (les banques C, D et GM sont des sons d'usine) ; toute écriture
+  demande une confirmation et indique l'emplacement écrasé ; la restauration d'une banque exige le mode « Port MIDI direct »
+  et fait d'abord une sauvegarde automatique ; aucun autre message n'est envoyé pendant l'envoi d'une banque ; une opération
+  s'arrête avec un message d'erreur si le N364 ne répond pas.
+
+**Ordre de test conseillé** (n'essaie pas les écritures avant les lectures) :
+1. onglet Banques : cliquer sur un son, vérifier que le N364 le sélectionne et que le plugin le lit ;
+2. onglet SysEx : « Sauvegarder les Programs A+B » et « Sauvegarder les Combinations A+B », et garder ces fichiers ailleurs ;
+3. copier un son vers un emplacement que tu n'utilises pas, et vérifier sur le N364 ;
+4. seulement ensuite : échanger, renommer, restaurer une banque.
+
+## Nouveautés de la v5
+
+- **Onglet Banques** : les Programs A, B, C, D et GM (136 sons) et les Combinations A, B, C, D, avec leurs noms
+  (liste d'usine du manuel, chapitre 14 de la Prise en main). **Un clic sur un son** le sélectionne sur le N364
+  (changement de mode, Bank Select, Program Change), puis le plugin le lit et met tous ses potards à jour.
+- **Suivi en temps réel** : quand tu changes de banque ou de son sur le N364, le plugin le détecte, se place sur
+  le même son dans la liste, le lit et met ses potards à jour (case « Suivre le N364 en temps réel »).
+- **Import d'une banque son par son** : « Importer cette banque » parcourt les 100 (ou 136) sons de la banque
+  choisie, lit chacun sur le N364 et crée un preset. Cela marche pour **toutes** les banques, y compris C, D et GM
+  qui ne partent pas dans le dump A+B. Les noms lus sur le N364 (en bleu clair) remplacent ceux du manuel et sont mémorisés.
+- **Noms des sons** : les 430 Multisounds (nom affiché sous le potard) et les 215 sons de batterie (colonne Inst No
+  des Drum Kits).
+- **Paramètres d'effets par type** : pour chacun des 47 effets, les paramètres portent leur vrai nom
+  (Reverb Time, Pre Delay, Delay Time L, Mod Speed...) avec leur plage (info-bulle) ; les paramètres inutilisés par
+  l'effet sont grisés. Source : tableau « Les paramètres d'effets » (chapitre 5 du manuel de référence, p. 90-91).
+  Quand tu changes de type d'effet, les paramètres sont renvoyés dans la plage du nouveau type.
 
 ## Nouveautés de la v4
 
@@ -112,6 +158,31 @@ avant de t'en servir. **Drums** : choisis le kit avant de modifier ; changer de 
 - **Plages d'effets** : niveaux et balances supposés 0 à 100 ; « Param 1 à 7 » en -200..800.
 - **Écriture en mémoire** : code 0x11 / 0x1A, banque 0 = A, 1 = B. Le N364 répond « écriture terminée »
   ou « erreur » (affiché en haut du plugin).
+
+### Points à vérifier propres à la v5
+
+- **Numérotation des banques** : Bank Select (CC0/CC32) + Program Change d'après le tableau « MIDI In (Hex) » du manuel
+  (A à D : mm=00, bb=00 à 03 ; GM : mm=38 ou 39, G129 à G136 : mm=3E). Le N364 doit avoir la **réception/émission des
+  Program Change activée** dans les réglages MIDI du mode Global.
+- **Suivi** : le N364 doit **émettre** ses Program Change (MIDI OUT du N364 relié à l'entrée de l'interface). Si le plugin
+  ne suit pas, vérifie ce réglage global.
+- **Import son par son** : compte environ une à deux minutes par banque. Si le N364 ne répond pas à une demande de
+  lecture, ce son est ignoré (le compte des échecs s'affiche).
+- **Noms d'usine** : extraits du manuel par reconnaissance de texte puis relus ; quelques noms peuvent différer
+  légèrement de ceux du synthé. Les noms lus sur le N364 les remplacent.
+- **Paramètres d'effets** : les « Parameter 1 à 7 » du Parameter Change sont supposés suivre l'ordre du tableau du
+  manuel (Dry:Effect Mix = Balance 1, et Balance 2 pour Dual Delay et les effets combinés). À confirmer avec
+  l'enregistrement MIDI du N364 (section suivante).
+- **Plages d'effets** : la plage envoyée est la plage « brute » (par exemple Reverb Time 0 à 97 pour 0,2 à 9,9 s ;
+  Mod Speed 0 à 216, non linéaire). L'info-bulle de chaque paramètre l'indique.
+- **Sons de batterie** : la valeur « Inst No » est supposée valoir le numéro du son de batterie + 1 (0 = OFF).
+- **Accusés de réception** : les écritures supposent que le N364 répond « données reçues » (0x23) à un dump de Program ou de
+  Combination, et « écriture terminée » (0x21) à une demande d'écriture, comme le décrit le manuel. Sans réponse, l'opération
+  s'arrête au bout de quelques secondes avec un message.
+- **Mode du N364** : pour recevoir un dump, le N364 est mis en mode Program (ou Combination) par le plugin. Une opération
+  d'écriture quitte donc un éventuel mode d'édition du N364 : enregistre ce que tu édites avant.
+- **Envoi d'une banque** : environ 12 secondes par banque sur une prise MIDI DIN (la durée est affichée). Ne touche pas au N364
+  pendant ce temps.
 
 ## 5. Valider avec ton N364 (enregistrement MIDI)
 

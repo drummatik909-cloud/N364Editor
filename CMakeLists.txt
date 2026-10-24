@@ -30,6 +30,9 @@ juce_add_plugin(N364Editor
 target_sources(N364Editor PRIVATE
     Source/ParamTable.h
     Source/DumpDecode.h
+    Source/DumpEncode.h
+    Source/FactoryLists.h
+    Source/EffectInfo.h
     Source/PluginProcessor.h
     Source/PluginProcessor.cpp
     Source/PluginEditor.h
